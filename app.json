@@ -11,7 +11,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#0b0f19"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "android": {
       "package": "com.tentry.alarmapp",
       "adaptiveIcon": {
@@ -38,14 +40,16 @@
         {
           "icon": "./assets/notification-icon.png",
           "color": "#ff3b30",
-          "sounds": ["./assets/alarm_sound.wav"],
+          "sounds": [
+            "./assets/alarm_sound.mp3"
+          ],
           "mode": "production"
         }
       ]
     ],
     "extra": {
       "eas": {
-        "projectId": "REPLACE_AFTER_eas_build_configure"
+        "projectId": "9f77ace2-4466-4932-bb51-d9a3ebbd441b"
       }
     }
   }
