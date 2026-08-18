@@ -1,0 +1,10 @@
+  GNU nano 9.2                    .easignore
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.env
+.env.local
+.DS_Store
+.git/
