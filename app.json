@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Tentry Alarm",
+    "slug": "tentry-alarm-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0b0f19"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "com.tentry.alarmapp",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0b0f19"
+      },
+      "permissions": [
+        "NOTIFICATIONS",
+        "VIBRATE",
+        "WAKE_LOCK",
+        "FOREGROUND_SERVICE",
+        "USE_FULL_SCREEN_INTENT",
+        "ACCESS_NOTIFICATION_POLICY",
+        "MODIFY_AUDIO_SETTINGS",
+        "RECEIVE_BOOT_COMPLETED",
+        "SYSTEM_ALERT_WINDOW",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "plugins": [
+      "expo-dev-client",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#ff3b30",
+          "sounds": ["./assets/alarm_sound.wav"],
+          "mode": "production"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_AFTER_eas_build_configure"
+      }
+    }
+  }
+}
