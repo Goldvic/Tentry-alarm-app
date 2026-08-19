@@ -8,18 +8,50 @@
 // Or on a free host (Render, Railway, Fly.io, etc.) so it's always on.
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+
 const app = express();
 app.use(express.json());
 
-// Paste the push token your phone showed you after running setup.
-// You can register more than one device by adding more tokens here.
-const DEVICE_TOKENS = [
-  'ExponentPushToken[PASTE_YOUR_TOKEN_HERE]',
-];
+const TOKENS_FILE = path.join(__dirname, 'tokens.json');
+
+function loadTokens() {
+  try {
+    const raw = fs.readFileSync(TOKENS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveTokens(tokens) {
+  fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2));
+}
 
 // Optional shared secret so randos can't trigger your alarm.
-// Set this, then have your bot send header: x-webhook-secret: <value>
+// Set this as an env var, then have your bot send header: x-webhook-secret: <value>
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'change-me';
+
+// The app's "Register Device" button calls this automatically once it has
+// a push token — no more manually editing this file and redeploying.
+app.post('/register', (req, res) => {
+  const { token } = req.body || {};
+  if (!token || typeof token !== 'string' || !token.startsWith('ExponentPushToken')) {
+    return res.status(400).json({ ok: false, error: 'invalid or missing token' });
+  }
+  const tokens = loadTokens();
+  if (!tokens.includes(token)) {
+    tokens.push(token);
+    saveTokens(tokens);
+  }
+  res.json({ ok: true, registeredCount: tokens.length });
+});
+
+app.get('/devices', (req, res) => {
+  res.json({ tokens: loadTokens() });
+});
 
 app.post('/webhook/tentry', async (req, res) => {
   const secret = req.headers['x-webhook-secret'];
@@ -27,12 +59,17 @@ app.post('/webhook/tentry', async (req, res) => {
     return res.status(401).json({ error: 'bad secret' });
   }
 
+  const tokens = loadTokens();
+  if (tokens.length === 0) {
+    return res.status(400).json({ ok: false, error: 'no devices registered yet — open the app and tap "Register Device"' });
+  }
+
   const payload = req.body || {};
   const symbol = payload.symbol || payload.ticker || 'Signal';
   const action = payload.action || payload.side || '';
   const message = payload.message || `${symbol} ${action}`.trim();
 
-  const messages = DEVICE_TOKENS.map((token) => ({
+  const messages = tokens.map((token) => ({
     to: token,
     sound: 'default', // actual alarm sound + DND bypass is handled by the
                        // app's own notification channel, not this field
@@ -61,7 +98,7 @@ app.post('/webhook/tentry', async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => res.json({ ok: true }));
+app.get('/health', (req, res) => res.json({ ok: true, devicesRegistered: loadTokens().length }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Relay listening on port ${PORT}`));

@@ -5,97 +5,100 @@ your Tentry bot posts a trading signal, instead of at a scheduled time.
 
 **Important:** This app needs a custom dev client, not Expo Go. Expo Go
 cannot bypass DND or force alarm-stream audio — those require native config
-that only exists in a real build. That's what we're building below.
+that only exists in a real build.
 
-## What's in this zip
+## What changed in this rebuild
+
+**The stuck-on-DND bug is fixed.** The old flow fired the DND settings
+screen, then — while your phone was still showing that settings screen and
+the app was backgrounded — immediately tried to fire the *next* settings
+screen (battery optimization) on a timer. Android blocks apps from
+launching new screens while backgrounded, so that second launch silently
+failed, and the whole step chain stalled with nothing visible happening.
+
+Now: DND and battery steps each show an **"Open Settings"** button and
+wait for you to actually come back to the app before a **"Continue"**
+button unlocks. Nothing auto-fires while you're not looking at the app.
+
+**Other fixes:**
+- `assets/icon.png`, `adaptive-icon.png`, `notification-icon.png`,
+  `splash.png` were previously JPEG files mislabeled `.png` with odd
+  embedded metadata — replaced with real PNGs.
+- The bundled alarm sound was a copyrighted commercial track. Removed —
+  ship your own tone or pick one from your phone in-app instead. A
+  royalty-free two-tone siren (`assets/alarm_sound.wav`) is now the
+  built-in default.
+- `app.json`'s notification sound config pointed at `.mp3`, the actual
+  notification channel asked for `.wav` — mismatched, so the loud channel
+  sound likely wasn't playing at all. Now consistent.
+- Relay server: no more manually pasting your push token into `server.js`
+  and redeploying every time. The app now registers itself with
+  `POST /register`.
+
+## What's in this project
 
 ```
-tentry-alarm-app/
-├── App.js              → app UI + step-by-step permission flow + alarm logic
+Tentry-alarm-app/
+├── App.js              → setup flow + full dashboard
+├── lib/storage.js       → AsyncStorage helpers
 ├── app.json             → Android permissions, notification channel config
 ├── eas.json              → EAS build profiles
 ├── package.json
-├── assets/               → put your icon + alarm sound here (see below)
+├── assets/               → icons, splash, default alarm tone
 └── relay-server/          → bot webhook → push notification bridge
 ```
 
-## 1. Add your assets (required before building)
-
-The app references these files — add them yourself since I can't ship
-binary audio/images in this zip:
-
-- `assets/alarm_sound.wav` — your alarm tone (loud, looping-friendly, a few
-  seconds is fine — it loops automatically)
-- `assets/icon.png` — 1024x1024
-- `assets/adaptive-icon.png` — 1024x1024
-- `assets/splash.png` — any size, will be centered
-- `assets/notification-icon.png` — 96x96, white/transparent silhouette
-
-Quickest path: grab a free alarm .wav online or record one, and use any
-square logo/emoji-based PNG for the icons — they just need to exist at
-those paths for the build to succeed.
-
-## 2. Build it — entirely from Termux
+## 1. Install the new dependency
 
 ```bash
-pkg update && pkg install nodejs git -y
-npm install -g eas-cli
-
-cd tentry-alarm-app
 npm install
-
-eas login                 # creates a free Expo account if you don't have one
-eas build:configure       # links the project, fills in the real projectId
-eas build -p android --profile production
 ```
 
-`eas build` uploads your project and builds the APK **in Expo's cloud** —
-your phone/Termux doesn't need to compile anything locally, so this works
-fine even on-device. It takes roughly 10–20 minutes. When done, it prints a
-download link and QR code — open it on your phone and install the APK
-directly (you'll need to allow "install unknown apps" for your browser
-once).
+(`expo-clipboard` was added for the dashboard's "Copy Token" button.)
+
+## 2. Build — from Termux
+
+```bash
+eas build -p android --profile preview
+```
+
+Uploads and builds in Expo's cloud — nothing compiles locally. Takes
+roughly 10–20 minutes on the free tier (longer if the queue is busy).
 
 ## 3. First launch
 
-Open the app. It walks through, one native dialog at a time:
+Same five steps as before, but DND and battery now wait for you:
 
-1. Notification permission
-2. Alarm channel creation (silent, no dialog — just setup)
-3. **DND access** — opens Android's exact settings screen; flip the toggle
-   for "Tentry Alarm" (Android won't let any app auto-grant this — it's a
-   deliberate security choice, same for every alarm-clock app)
-4. Battery optimization exemption — keeps the app alive in background
-5. Push token registration — the app shows you a token string
+1. Notification permission (auto)
+2. Alarm channel creation (auto, no dialog)
+3. **DND access** — tap Open Settings, flip the toggle for "Tentry Alarm",
+   go back, tap Continue
+4. **Battery optimization** — tap Open Settings, choose "Allow"/"Don't
+   optimize", go back, tap Continue
+5. Push token registration (auto)
 
-Copy that token into `relay-server/server.js`.
+After setup you land on the **Dashboard** — status card, alarm sound
+picker with a Test Alarm button, relay connection card, recent signal
+history, and settings.
 
-## 4. Set up the relay
+## 4. Connect the relay
 
-See `relay-server/README.md`. Short version: it's the bridge between your
-bot's webhook and your phone's push notification. Deploy it anywhere
-(Render/Railway free tier is easiest), point your Tentry bot's webhook at
-it, done.
-
-## 5. Test end-to-end
-
-```bash
-curl -X POST https://<your-relay-host>/webhook/tentry \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: <your secret>" \
-  -d '{"symbol":"BTCUSDT","action":"BUY"}'
-```
-
-Phone should ring at full volume even in silent mode within a couple
-seconds.
+1. Deploy `relay-server/` (see its README — Render/Railway free tier is
+   easiest).
+2. In the Dashboard's Relay Connection card, paste the deployed URL and
+   your webhook secret, tap **Save**, then **Register Device**.
+3. Point your Tentry bot's webhook at `https://<your-relay>/webhook/tentry`.
+4. Tap **Send Test Signal** to confirm the whole chain rings your phone.
 
 ## Notes / honest limitations
 
-- Android requires manual DND-access grant — no app, including this one,
-  can silently self-grant that. It's a one-time toggle.
+- Android requires manual DND-access and battery-exemption grants — no
+  app can silently self-grant those, and there's no API for the app to
+  double check they're still on later. The Dashboard's status card
+  reflects what you confirmed during setup, not a live re-check.
 - Some phone brands (Xiaomi/MIUI, Huawei, Oppo) have extra aggressive
-  battery managers on top of stock Android that can still kill background
-  apps. If signals stop arriving after hours idle, check that brand's
-  "autostart" / "protected apps" list and add this app there too.
-- To update the alarm sound or logic after building, edit the files and
-  re-run `eas build` — no laptop needed, same Termux flow each time.
+  battery managers on top of stock Android. If signals stop arriving after
+  hours idle, check that brand's "autostart"/"protected apps" list too.
+- `tokens.json` on the relay is a flat file — fine for personal use, but
+  if your host wipes disk on redeploy you'll need to tap "Register Device"
+  again afterward.

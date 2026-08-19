@@ -41,7 +41,7 @@
           "icon": "./assets/notification-icon.png",
           "color": "#ff3b30",
           "sounds": [
-            "./assets/alarm_sound.mp3"
+            "./assets/alarm_sound.wav"
           ],
           "mode": "production"
         }
