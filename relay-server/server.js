@@ -73,11 +73,14 @@ app.post('/webhook/tentry', async (req, res) => {
     to: token,
     sound: 'default', // actual alarm sound + DND bypass is handled by the
                        // app's own notification channel, not this field
-    title: 'Trading Signal',
+    title: symbol,
     body: message,
     priority: 'high',
-    channelId: 'signal-alarm',
-    data: { payload },
+    channelId: 'signal-alarm-v4',
+    // Flattened (not nested under "payload") so the app can read
+    // data.symbol / data.action directly for the ring screen and for
+    // routing the notification straight into the full-screen alarm card.
+    data: { symbol, action, message, raw: payload },
   }));
 
   try {

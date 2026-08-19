@@ -1,451 +1,407 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Linking,
-  Platform,
-  AppState,
-  TextInput,
-  Alert,
-  Switch,
-  ActivityIndicator,
-} from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View, AppState, Alert, Linking } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
-import * as Device from 'expo-device';
-import { Audio } from 'expo-av';
-import Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
-import * as Clipboard from 'expo-clipboard';
-import * as KeepAwake from 'expo-keep-awake';
+import * as SplashScreen from 'expo-splash-screen';
+import notifee, { EventType } from '@notifee/react-native';
 
-import { KEYS, getJSON, setJSON, getString, setString, pushSignalHistory } from './lib/storage';
+import { SettingsProvider, useSettings } from './context/SettingsContext';
+import { KEYS, getJSON, getString, setJSON, setString, pushSignalHistory } from './lib/storage';
+import { createAlarmChannel, requestNotificationPermissions, getNotificationPermissionStatus } from './lib/notifications';
+import { startRinging, stopRinging, snoozeRinging, ringImmediately } from './lib/alarmEngine';
+import { buildSteps } from './lib/setupSteps';
 
-// ---------------------------------------------------------------------
-// Notification behaviour while the app is in the foreground
-// ---------------------------------------------------------------------
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    priority: Notifications.AndroidNotificationPriority.MAX,
-  }),
-});
+import ErrorBoundary from './components/ErrorBoundary';
+import TabBar from './components/TabBar';
+import OnboardingScreen from './screens/OnboardingScreen';
+import HomeScreen from './screens/HomeScreen';
+import HistoryScreen from './screens/HistoryScreen';
+import SettingsScreen from './screens/SettingsScreen';
+import AlarmRingScreen from './screens/AlarmRingScreen';
 
-const ALARM_CHANNEL_ID = 'signal-alarm';
-const ALARM_SOUND_ANDROID = 'alarm_sound.wav'; // must match app.json plugin "sounds" entry
-const COLORS = {
-  bg: '#0b0f19',
-  card: '#161c2c',
-  cardAlt: '#1d2438',
-  border: '#232b45',
-  text: '#ffffff',
-  textDim: '#c3c9de',
-  textFaint: '#8892b0',
-  accent: '#ff3b30',
-  accentDim: '#ff3b3033',
-  good: '#3ddc84',
-  warn: '#ffb020',
-  mono: Platform.OS === 'android' ? 'monospace' : 'Courier',
-};
+// Keep the native splash up until we've both finished loading saved state
+// AND a minimum time has passed — a small bundle like this can finish
+// loading in a single frame, which is what made the splash look like it
+// "never showed" before: it was hidden almost instantly. Holding it open
+// for a beat makes it actually visible every launch.
+SplashScreen.preventAutoHideAsync().catch(() => {});
+const MIN_SPLASH_MS = 1400;
 
-// ---------------------------------------------------------------------
-// Step definitions
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Registered at module scope (runs as soon as the JS bundle loads, even
+// if the app was fully killed) — this is what lets Snooze/Dismiss on the
+// lock-screen notification work without the user ever opening the app.
 //
-// "auto" steps run themselves with no user gesture needed beyond the
-// OS permission dialog. "external" steps navigate the user to a system
-// Settings screen — those can ONLY be safely re-entered by a direct user
-// tap (Android blocks apps from launching activities while backgrounded,
-// which is what caused the old flow to silently die after DND).
-// ---------------------------------------------------------------------
-function buildSteps({ onPushToken }) {
-  return [
-    {
-      key: 'notifications',
-      kind: 'auto',
-      title: 'Notification Permission',
-      description: 'Required so the app can alert you the instant your bot sends a signal.',
-      run: async () => {
-        const { status } = await Notifications.requestPermissionsAsync({
-          ios: { allowAlert: true, allowSound: true, allowBadge: true, allowCriticalAlerts: true },
-        });
-        return status === 'granted';
-      },
-    },
-    {
-      key: 'channel',
-      kind: 'auto',
-      title: 'Alarm Channel Setup',
-      description: 'Creates a dedicated high-priority channel that can ring through silent mode.',
-      run: async () => {
-        if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
-            name: 'Trading Signal Alarm',
-            importance: Notifications.AndroidImportance.MAX,
-            sound: ALARM_SOUND_ANDROID,
-            bypassDnd: true,
-            enableVibrate: true,
-            vibrationPattern: [0, 500, 500, 500, 500, 500],
-            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-            audioAttributes: {
-              usage: Notifications.AndroidAudioUsage.ALARM,
-              contentType: Notifications.AndroidAudioContentType.SONIFICATION,
-            },
-          });
-        }
-        return true;
-      },
-    },
-    {
-      key: 'dnd',
-      kind: 'external',
-      title: 'Do Not Disturb Access',
-      description:
-        'Android requires a manual toggle to let this app bypass silent/DND mode. Tap below to open the exact settings screen, enable "Tentry Alarm", then come back and press Continue.',
-      openSettings: async () => {
-        try {
-          await Linking.sendIntent('android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS');
-        } catch (e) {
-          await Linking.openSettings();
-        }
-      },
-    },
-    {
-      key: 'battery',
-      kind: 'external',
-      title: 'Battery Optimization',
-      description:
-        'Disabling battery optimization stops Android from killing the app in the background, so alarms still ring after your phone has been idle. Tap below, choose "Allow" / "Don\'t optimize", then come back and press Continue.',
-      openSettings: async () => {
-        try {
-          await Linking.sendIntent('android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS', [
-            { key: 'package', value: Constants.expoConfig?.android?.package },
-          ]);
-        } catch (e) {
-          await Linking.openSettings();
-        }
-      },
-    },
-    {
-      key: 'pushtoken',
-      kind: 'auto',
-      title: 'Registering This Device',
-      description: "Generates the push token your relay server uses to target this exact phone.",
-      run: async () => {
-        if (!Device.isDevice) return false;
-        const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-        const tokenResponse = await Notifications.getExpoPushTokenAsync(
-          projectId ? { projectId } : undefined
-        );
-        onPushToken && onPushToken(tokenResponse.data);
-        return true;
-      },
-    },
-  ];
+// Wrapped in try/catch: this runs before React mounts anything, so if
+// notifee's native side isn't linked yet on a given device/build, an
+// uncaught throw here used to kill the whole bundle with nothing on
+// screen but a blank white window. Now it just logs and the rest of the
+// app still boots normally.
+try {
+  notifee.onBackgroundEvent(async ({ type, detail }) => {
+    if (type === EventType.ACTION_PRESS || type === EventType.PRESS) {
+      const actionId = detail.pressAction?.id;
+      if (actionId === 'dismiss') {
+        await stopRinging();
+      } else if (actionId === 'snooze') {
+        const minutes = (await getJSON(KEYS.SNOOZE_MINUTES, 5)) || 5;
+        const data = detail.notification?.data || {};
+        await snoozeRinging({ minutes, title: data.symbol, body: detail.notification?.body, data });
+      } else if (type === EventType.DISMISSED) {
+        // swipe-dismissed — leave sound/vibration running only if it was a
+        // real ring (Android lets ongoing alarm notifications resist swipe
+        // dismissal already; this is a safety net for OEMs that don't).
+      }
+    }
+  });
+} catch (e) {
+  console.error('Failed to register notifee background handler:', e);
 }
 
-// ---------------------------------------------------------------------
-// Small shared UI pieces
-// ---------------------------------------------------------------------
-function Card({ children, style }) {
-  return <View style={[styles.card, style]}>{children}</View>;
-}
+function RootApp() {
+  const settings = useSettings();
+  const [booting, setBooting] = useState(true);
+  const [phase, setPhase] = useState('onboarding'); // 'onboarding' | 'main'
+  const [tab, setTab] = useState('home');
 
-function SectionTitle({ children }) {
-  return <Text style={styles.stepTitle}>{children}</Text>;
-}
-
-function Pill({ ok, label }) {
-  return (
-    <View style={[pillStyles.base, ok ? pillStyles.good : pillStyles.warn]}>
-      <Text style={pillStyles.text}>{label}</Text>
-    </View>
-  );
-}
-
-const pillStyles = StyleSheet.create({
-  base: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, alignSelf: 'flex-start' },
-  good: { backgroundColor: '#123b2b' },
-  warn: { backgroundColor: '#3b2e12' },
-  text: { color: '#fff', fontSize: 12, fontWeight: '600' },
-});
-
-function PrimaryButton({ label, onPress, disabled, loading }) {
-  return (
-    <TouchableOpacity
-      style={[styles.button, disabled && styles.buttonDisabled]}
-      onPress={onPress}
-      disabled={disabled || loading}
-    >
-      {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{label}</Text>}
-    </TouchableOpacity>
-  );
-}
-
-function SecondaryButton({ label, onPress, disabled }) {
-  return (
-    <TouchableOpacity
-      style={[styles.buttonSecondary, disabled && styles.buttonDisabled]}
-      onPress={onPress}
-      disabled={disabled}
-    >
-      <Text style={styles.buttonText}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
-
-// ---------------------------------------------------------------------
-// Setup flow screen
-// ---------------------------------------------------------------------
-function SetupScreen({ steps, stepIndex, onAdvance, onOpenExternal, awaitingReturn }) {
-  const step = steps[stepIndex];
-  if (!step) return null;
-
-  return (
-    <Card>
-      <Text style={styles.stepLabel}>
-        Step {stepIndex + 1} of {steps.length}
-      </Text>
-      <SectionTitle>{step.title}</SectionTitle>
-      <Text style={styles.stepDesc}>{step.description}</Text>
-
-      {step.kind === 'external' && (
-        <View style={{ marginTop: 14 }}>
-          <PrimaryButton
-            label={awaitingReturn ? 'Open Settings Again' : 'Open Settings'}
-            onPress={() => onOpenExternal(step)}
-          />
-          <View style={{ height: 10 }} />
-          <SecondaryButton
-            label="I've done this — Continue"
-            onPress={() => onAdvance(step, true)}
-            disabled={!awaitingReturn}
-          />
-          {!awaitingReturn && (
-            <Text style={styles.hint}>Continue unlocks once you've opened Settings and come back.</Text>
-          )}
-        </View>
-      )}
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------
-// Dashboard screen
-// ---------------------------------------------------------------------
-function DashboardScreen({
-  results,
-  pushToken,
-  alarmName,
-  onPickSong,
-  onTestAlarm,
-  onStopAlarm,
-  isAlarmPlaying,
-  lastSignal,
-  history,
-  onClearHistory,
-  onRerunSetup,
-  relayUrl,
-  setRelayUrl,
-  webhookSecret,
-  setWebhookSecret,
-  onSaveRelay,
-  onRegisterToken,
-  onSendTestSignal,
-  registering,
-  sendingTest,
-  keepAwake,
-  onToggleKeepAwake,
-  notifGranted,
-  onFixNotifications,
-  onFixStep,
-}) {
-  const [copied, setCopied] = useState(false);
-
-  const copyToken = async () => {
-    if (!pushToken) return;
-    await Clipboard.setStringAsync(pushToken);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
-  const allGood = notifGranted && results.dnd && results.battery && pushToken;
-
-  return (
-    <>
-      {/* Status */}
-      <Card>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <SectionTitle>Status</SectionTitle>
-          <Pill ok={allGood} label={allGood ? 'All set' : 'Needs attention'} />
-        </View>
-
-        <StatusRow label="Notifications" ok={notifGranted} onFix={onFixNotifications} />
-        <StatusRow label="Do Not Disturb bypass" ok={!!results.dnd} onFix={() => onFixStep('dnd')} />
-        <StatusRow label="Battery optimization exempt" ok={!!results.battery} onFix={() => onFixStep('battery')} />
-        <StatusRow label="Device registered" ok={!!pushToken} onFix={onRerunSetup} />
-
-        <Text style={styles.hint}>
-          Android can't report DND/battery status back to the app — these reflect what you confirmed
-          during setup. Use "Fix" if signals ever stop arriving.
-        </Text>
-      </Card>
-
-      {/* Alarm sound */}
-      <Card>
-        <SectionTitle>Alarm Sound</SectionTitle>
-        <Text style={styles.stepDesc}>
-          {alarmName ? `Currently using: ${alarmName}` : 'Using the built-in siren tone.'}
-        </Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 12 }}>
-          <View style={{ marginRight: 10, marginBottom: 10 }}>
-            <SecondaryButton label={alarmName ? 'Change Song' : 'Choose Song'} onPress={onPickSong} />
-          </View>
-          {!isAlarmPlaying ? (
-            <SecondaryButton label="Test Alarm" onPress={onTestAlarm} />
-          ) : (
-            <PrimaryButton label="Stop Alarm" onPress={onStopAlarm} />
-          )}
-        </View>
-      </Card>
-
-      {/* Relay connection */}
-      <Card>
-        <SectionTitle>Relay Connection</SectionTitle>
-        <Text style={styles.stepDesc}>Your push token (used by the relay server to target this phone):</Text>
-        <Text selectable style={styles.token}>{pushToken || 'Not generated yet'}</Text>
-        <View style={{ marginTop: 8, marginBottom: 16, alignItems: 'flex-start' }}>
-          <SecondaryButton label={copied ? 'Copied ✓' : 'Copy Token'} onPress={copyToken} disabled={!pushToken} />
-        </View>
-
-        <Text style={styles.fieldLabel}>Relay Server URL</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="https://your-relay.onrender.com"
-          placeholderTextColor={COLORS.textFaint}
-          autoCapitalize="none"
-          autoCorrect={false}
-          value={relayUrl}
-          onChangeText={setRelayUrl}
-        />
-
-        <Text style={styles.fieldLabel}>Webhook Secret</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="change-me"
-          placeholderTextColor={COLORS.textFaint}
-          autoCapitalize="none"
-          autoCorrect={false}
-          secureTextEntry
-          value={webhookSecret}
-          onChangeText={setWebhookSecret}
-        />
-
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 14 }}>
-          <View style={{ marginRight: 10, marginBottom: 10 }}>
-            <SecondaryButton label="Save" onPress={onSaveRelay} />
-          </View>
-          <View style={{ marginRight: 10, marginBottom: 10 }}>
-            <SecondaryButton
-              label={registering ? 'Registering…' : 'Register Device'}
-              onPress={onRegisterToken}
-              disabled={registering || !relayUrl || !pushToken}
-            />
-          </View>
-          <PrimaryButton
-            label={sendingTest ? 'Sending…' : 'Send Test Signal'}
-            onPress={onSendTestSignal}
-            loading={sendingTest}
-            disabled={!relayUrl}
-          />
-        </View>
-        <Text style={styles.hint}>
-          "Register Device" saves your token on the relay automatically. "Send Test Signal" fires a fake
-          BUY signal through the relay to your phone, end to end.
-        </Text>
-      </Card>
-
-      {/* Last signal */}
-      {lastSignal && (
-        <Card>
-          <SectionTitle>Last Signal</SectionTitle>
-          <Text style={styles.stepDesc}>{lastSignal}</Text>
-          {isAlarmPlaying && (
-            <View style={{ marginTop: 10, alignItems: 'flex-start' }}>
-              <PrimaryButton label="Stop Alarm" onPress={onStopAlarm} />
-            </View>
-          )}
-        </Card>
-      )}
-
-      {/* History */}
-      <Card>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <SectionTitle>Recent Signals</SectionTitle>
-          {history.length > 0 && (
-            <TouchableOpacity onPress={onClearHistory}>
-              <Text style={styles.linkText}>Clear</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-        {history.length === 0 ? (
-          <Text style={styles.stepDesc}>No signals yet — send a test above to see one here.</Text>
-        ) : (
-          history.map((h, i) => (
-            <View key={i} style={styles.historyRow}>
-              <Text style={styles.historyMsg}>{h.message}</Text>
-              <Text style={styles.historyTime}>{h.time}</Text>
-            </View>
-          ))
-        )}
-      </Card>
-
-      {/* Settings */}
-      <Card>
-        <SectionTitle>Settings</SectionTitle>
-        <View style={styles.switchRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.stepDesc}>Keep screen awake while app is open</Text>
-          </View>
-          <Switch value={keepAwake} onValueChange={onToggleKeepAwake} trackColor={{ true: COLORS.accent }} />
-        </View>
-        <SecondaryButton label="Re-run Full Setup" onPress={onRerunSetup} />
-      </Card>
-    </>
-  );
-}
-
-function StatusRow({ label, ok, onFix }) {
-  return (
-    <View style={styles.statusRow}>
-      <Text style={styles.statusLabel}>
-        {ok ? '✅' : '⚠️'} {label}
-      </Text>
-      {!ok && onFix && (
-        <TouchableOpacity onPress={onFix}>
-          <Text style={styles.linkText}>Fix</Text>
-        </TouchableOpacity>
-      )}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------
-// Root component
-// ---------------------------------------------------------------------
-export default function App() {
-  const [phase, setPhase] = useState('setup'); // 'setup' | 'dashboard'
-  const [stepIndex, setStepIndex] = useState(0);
   const [results, setResults] = useState({});
   const [pushToken, setPushToken] = useState(null);
-  const [awaitingReturn, setAwaitingReturn] = useState(false);
   const [notifGranted, setNotifGranted] = useState(false);
 
   const [lastSignal, setLastSignal] = useState(null);
   const [alarmUri, setAlarmUri] = useState(null);
+  const [alarmName, setAlarmName] = useState(null);
+  const [isAlarmPlaying, setIsAlarmPlaying] = useState(false);
+
+  const [history, setHistory] = useState([]);
+  const [relayUrl, setRelayUrl] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [registering, setRegistering] = useState(false);
+  const [sendingTest, setSendingTest] = useState(false);
+
+  const [ringVisible, setRingVisible] = useState(false);
+  const [ringSignal, setRingSignal] = useState(null);
+
+  const appState = useRef(AppState.currentState);
+  const stepsRef = useRef(buildSteps({ onPushToken: setPushToken }));
+  const autoDismissTimer = useRef(null);
+
+  const startTicking = useCallback(
+    (signalPayload, notifBody) => {
+      setRingSignal(signalPayload);
+      setRingVisible(true);
+      startRinging({
+        soundUri: alarmUri,
+        forceMaxVolume: settings.forceMaxVolume,
+        alarmVolume: settings.alarmVolume,
+        vibrationPattern: settings.vibrationPattern,
+      });
+      setIsAlarmPlaying(true);
+
+      if (autoDismissTimer.current) clearTimeout(autoDismissTimer.current);
+      if (settings.autoDismissMinutes > 0) {
+        autoDismissTimer.current = setTimeout(() => {
+          handleDismiss();
+        }, settings.autoDismissMinutes * 60 * 1000);
+      }
+    },
+    [alarmUri, settings.forceMaxVolume, settings.alarmVolume, settings.vibrationPattern, settings.autoDismissMinutes]
+  );
+
+  const handleDismiss = useCallback(async () => {
+    if (autoDismissTimer.current) clearTimeout(autoDismissTimer.current);
+    await stopRinging();
+    setIsAlarmPlaying(false);
+    setRingVisible(false);
+  }, []);
+
+  const handleSnooze = useCallback(async () => {
+    if (autoDismissTimer.current) clearTimeout(autoDismissTimer.current);
+    await snoozeRinging({
+      minutes: settings.snoozeMinutes,
+      title: ringSignal?.symbol,
+      body: ringSignal?.message,
+      data: ringSignal || {},
+    });
+    setIsAlarmPlaying(false);
+    setRingVisible(false);
+  }, [settings.snoozeMinutes, ringSignal]);
+
+  // ---- Boot sequence ----
+  useEffect(() => {
+    (async () => {
+      const loadWork = (async () => {
+        await createAlarmChannel();
+
+        const savedAlarm = await getJSON(KEYS.ALARM_URI, null);
+        if (savedAlarm) {
+          setAlarmUri(savedAlarm.uri);
+          setAlarmName(savedAlarm.name);
+        }
+        const savedToken = await getString(KEYS.PUSH_TOKEN, '');
+        if (savedToken) setPushToken(savedToken);
+
+        const savedResults = await getJSON(KEYS.SETUP_RESULTS, null);
+        const steps = stepsRef.current;
+        if (savedResults) {
+          setResults(savedResults);
+          const allOk = steps.every((s) => savedResults[s.key]);
+          setPhase(allOk && savedToken ? 'main' : 'onboarding');
+        } else {
+          setPhase('onboarding');
+        }
+
+        setHistory((await getJSON(KEYS.SIGNAL_HISTORY, [])) || []);
+        setRelayUrl(await getString(KEYS.RELAY_URL, ''));
+        setWebhookSecret(await getString(KEYS.WEBHOOK_SECRET, ''));
+
+        const granted = await getNotificationPermissionStatus();
+        setNotifGranted(granted);
+
+        // Cold start from tapping a full-screen alarm notification (app
+        // was fully killed) — jump straight into the ring screen instead
+        // of showing the dashboard first.
+        const initial = await notifee.getInitialNotification();
+        if (initial?.notification?.data?.kind === 'alarm') {
+          startTicking(initial.notification.data, initial.notification.body);
+        }
+      })();
+
+      try {
+        await Promise.all([loadWork, delay(MIN_SPLASH_MS)]);
+      } catch (e) {
+        // A single failed step in loadWork (a storage read, notifee, etc.)
+        // used to reject here and skip everything below — setBooting(false)
+        // and SplashScreen.hideAsync() never ran, so the app stayed stuck
+        // on the boot screen forever. Now we log it and still fall through
+        // to onboarding so the app always becomes visible and usable.
+        console.error('Boot sequence failed:', e);
+        setPhase('onboarding');
+      } finally {
+        setBooting(false);
+        await SplashScreen.hideAsync().catch(() => {});
+      }
+    })();
+  }, []);
+
+  // ---- Foreground app-state / notification-permission re-check ----
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (next) => {
+      const cameBack = appState.current.match(/inactive|background/) && next === 'active';
+      appState.current = next;
+      if (cameBack) {
+        setNotifGranted(await getNotificationPermissionStatus());
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // ---- Incoming push notifications (foreground) ----
+  useEffect(() => {
+    const receivedSub = Notifications.addNotificationReceivedListener(async (notification) => {
+      const body = notification.request.content.body || 'Signal received';
+      const dataPayload = notification.request.content.data || {};
+      setLastSignal(body);
+      const entry = { message: body, time: new Date().toLocaleTimeString() };
+      const next = await pushSignalHistory(entry);
+      setHistory(next);
+      await ringImmediately({ title: dataPayload.symbol || 'Trading Signal', body, data: dataPayload });
+      startTicking({ symbol: dataPayload.symbol, action: dataPayload.action, message: body }, body);
+    });
+    return () => receivedSub.remove();
+  }, [startTicking]);
+
+  // ---- notifee foreground events: tapping Snooze/Dismiss while the app
+  // is open, or tapping the notification itself ----
+  useEffect(() => {
+    const unsub = notifee.onForegroundEvent(({ type, detail }) => {
+      if (type === EventType.ACTION_PRESS) {
+        const id = detail.pressAction?.id;
+        if (id === 'dismiss') handleDismiss();
+        if (id === 'snooze') handleSnooze();
+      } else if (type === EventType.PRESS) {
+        const data = detail.notification?.data;
+        if (data?.kind === 'alarm' && !ringVisible) {
+          startTicking(data, detail.notification?.body);
+        }
+      }
+    });
+    return () => unsub();
+  }, [handleDismiss, handleSnooze, ringVisible, startTicking]);
+
+  // ---- Relay actions ----
+  const onSaveRelay = async () => {
+    await setString(KEYS.RELAY_URL, relayUrl.trim());
+    await setString(KEYS.WEBHOOK_SECRET, webhookSecret);
+    Alert.alert('Saved', 'Relay settings saved on this device.');
+  };
+
+  const onRegisterToken = async () => {
+    if (!relayUrl || !pushToken) return;
+    setRegistering(true);
+    try {
+      const resp = await fetch(`${relayUrl.replace(/\/$/, '')}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: pushToken }),
+      });
+      if (!resp.ok) throw new Error(`Server responded ${resp.status}`);
+      Alert.alert('Registered', 'This device is now registered with your relay server.');
+    } catch (e) {
+      Alert.alert('Registration failed', String(e.message || e));
+    } finally {
+      setRegistering(false);
+    }
+  };
+
+  const onSendTestSignal = async () => {
+    if (!relayUrl) return;
+    setSendingTest(true);
+    try {
+      const resp = await fetch(`${relayUrl.replace(/\/$/, '')}/webhook/tentry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-webhook-secret': webhookSecret || 'change-me' },
+        body: JSON.stringify({ symbol: 'BTCUSDT', action: 'BUY', message: 'Test signal from Settings' }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || `Server responded ${resp.status}`);
+      Alert.alert('Sent', 'Test signal sent — your phone should ring shortly.');
+    } catch (e) {
+      Alert.alert('Send failed', String(e.message || e));
+    } finally {
+      setSendingTest(false);
+    }
+  };
+
+  const onClearHistory = async () => {
+    await setJSON(KEYS.SIGNAL_HISTORY, []);
+    setHistory([]);
+  };
+
+  const pickAlarmSong = async () => {
+    const result = await DocumentPicker.getDocumentAsync({ type: 'audio/*', copyToCacheDirectory: true });
+    if (result.canceled) return;
+    const file = result.assets[0];
+    setAlarmUri(file.uri);
+    setAlarmName(file.name);
+    await setJSON(KEYS.ALARM_URI, { uri: file.uri, name: file.name });
+  };
+
+  const onTestAlarm = () => {
+    startTicking({ symbol: 'TEST', action: 'BUY', message: 'This is a test alarm' }, 'Test alarm');
+  };
+
+  const onFixNotifications = async () => {
+    const granted = await requestNotificationPermissions();
+    setNotifGranted(granted);
+    if (!granted) {
+      Alert.alert(
+        'Still blocked',
+        'Open Settings → Apps → Tentry Alarm → Notifications and enable it manually.',
+        [{ text: 'Open Settings', onPress: () => Linking.openSettings() }, { text: 'Cancel' }]
+      );
+    }
+  };
+
+  const onRerunSetup = () => setPhase('onboarding');
+
+  const onFixStep = async (key) => {
+    // Mark that one step as incomplete so the onboarding screen's resume
+    // logic lands on it directly instead of restarting from step 1.
+    const current = (await getJSON(KEYS.SETUP_RESULTS, {})) || {};
+    const next = { ...current, [key]: false };
+    await setJSON(KEYS.SETUP_RESULTS, next);
+    setResults(next);
+    setPhase('onboarding');
+  };
+
+  const onOnboardingComplete = async () => {
+    const savedResults = (await getJSON(KEYS.SETUP_RESULTS, null)) || {};
+    setResults(savedResults);
+    setPhase('main');
+  };
+
+  if (booting) {
+    return <View style={{ flex: 1, backgroundColor: '#05070d' }} />;
+  }
+
+  return (
+    <View style={{ flex: 1, backgroundColor: '#05070d' }}>
+      <StatusBar style="light" />
+
+      {phase === 'onboarding' ? (
+        <OnboardingScreen onComplete={onOnboardingComplete} onPushToken={setPushToken} />
+      ) : (
+        <View style={{ flex: 1 }}>
+          {tab === 'home' && (
+            <HomeScreen
+              results={results}
+              pushToken={pushToken}
+              notifGranted={notifGranted}
+              alarmName={alarmName}
+              onPickSong={pickAlarmSong}
+              onTestAlarm={onTestAlarm}
+              onStopAlarm={handleDismiss}
+              isAlarmPlaying={isAlarmPlaying}
+              lastSignal={lastSignal}
+              relayUrl={relayUrl}
+              onFixNotifications={onFixNotifications}
+              onFixStep={onFixStep}
+              onGoSettings={() => setTab('settings')}
+            />
+          )}
+          {tab === 'history' && <HistoryScreen history={history} onClearHistory={onClearHistory} />}
+          {tab === 'settings' && (
+            <SettingsScreen
+              results={results}
+              notifGranted={notifGranted}
+              onFixNotifications={onFixNotifications}
+              onFixStep={onFixStep}
+              onRerunSetup={onRerunSetup}
+              pushToken={pushToken}
+              relayUrl={relayUrl}
+              setRelayUrl={setRelayUrl}
+              webhookSecret={webhookSecret}
+              setWebhookSecret={setWebhookSecret}
+              onSaveRelay={onSaveRelay}
+              onRegisterToken={onRegisterToken}
+              onSendTestSignal={onSendTestSignal}
+              registering={registering}
+              sendingTest={sendingTest}
+            />
+          )}
+          <TabBar active={tab} onChange={setTab} />
+        </View>
+      )}
+
+      <AlarmRingScreen
+        visible={ringVisible}
+        signal={ringSignal}
+        onSnooze={handleSnooze}
+        onDismiss={handleDismiss}
+        snoozeMinutes={settings.snoozeMinutes}
+      />
+    </View>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <SettingsProvider>
+          <RootApp />
+        </SettingsProvider>
+      </SafeAreaProvider>
+    </ErrorBoundary>
+  );
+}
+;
   const [alarmName, setAlarmName] = useState(null);
   const [isAlarmPlaying, setIsAlarmPlaying] = useState(false);
   const soundRef = useRef(null);
