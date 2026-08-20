@@ -4,14 +4,18 @@ import { KEYS, getJSON, getString, setJSON, setString } from '../lib/storage';
 import { ACCENTS, SCALE_STEPS } from '../lib/theme';
 
 const DEFAULTS = {
-  uiScale: 'medium',
-  accent: 'ice', // matches the new cyan-to-purple icon artwork
+  uiScale: 'small',
+  accent: 'ice',
   forceMaxVolume: true,
   alarmVolume: 1,
   snoozeMinutes: 5,
   autoDismissMinutes: 2,
   vibrationPattern: 'pulse',
   keepAwake: false,
+  clockFormat: '24h',
+  quietHoursStart: '',
+  quietHoursEnd: '',
+  notifVibration: true,
 };
 
 const SettingsContext = createContext(null);
@@ -26,6 +30,11 @@ export function SettingsProvider({ children }) {
   const [autoDismissMinutes, setAutoDismissMinutesState] = useState(DEFAULTS.autoDismissMinutes);
   const [vibrationPattern, setVibrationPatternState] = useState(DEFAULTS.vibrationPattern);
   const [keepAwake, setKeepAwakeState] = useState(DEFAULTS.keepAwake);
+  const [clockFormat, setClockFormatState] = useState(DEFAULTS.clockFormat);
+  const [quietHoursStart, setQuietHoursStartState] = useState(DEFAULTS.quietHoursStart);
+  const [quietHoursEnd, setQuietHoursEndState] = useState(DEFAULTS.quietHoursEnd);
+  const [notifVibration, setNotifVibrationState] = useState(DEFAULTS.notifVibration);
+  const [googleEmail, setGoogleEmailState] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -39,6 +48,11 @@ export function SettingsProvider({ children }) {
       const ka = await getJSON(KEYS.KEEP_AWAKE, DEFAULTS.keepAwake);
       setKeepAwakeState(!!ka);
       if (ka) KeepAwake.activateKeepAwakeAsync();
+      setClockFormatState(await getString(KEYS.CLOCK_FORMAT, DEFAULTS.clockFormat));
+      setQuietHoursStartState(await getString(KEYS.QUIET_HOURS_START, DEFAULTS.quietHoursStart));
+      setQuietHoursEndState(await getString(KEYS.QUIET_HOURS_END, DEFAULTS.quietHoursEnd));
+      setNotifVibrationState(await getJSON(KEYS.NOTIF_VIBRATION, DEFAULTS.notifVibration));
+      setGoogleEmailState(await getString(KEYS.GOOGLE_EMAIL, null) || null);
       setLoaded(true);
     })();
   }, []);
@@ -88,10 +102,32 @@ export function SettingsProvider({ children }) {
     }
   }, []);
 
-  // scale(baseSize) -> baseSize adjusted for the current Display size
-  // setting. Used for every font size AND icon size in the app so the
-  // "adjustable icon size" request applies everywhere consistently
-  // instead of each screen inventing its own math.
+  const setClockFormat = useCallback(async (v) => {
+    setClockFormatState(v);
+    await setString(KEYS.CLOCK_FORMAT, v);
+  }, []);
+
+  const setQuietHoursStart = useCallback(async (v) => {
+    setQuietHoursStartState(v);
+    await setString(KEYS.QUIET_HOURS_START, v);
+  }, []);
+
+  const setQuietHoursEnd = useCallback(async (v) => {
+    setQuietHoursEndState(v);
+    await setString(KEYS.QUIET_HOURS_END, v);
+  }, []);
+
+  const setNotifVibration = useCallback(async (v) => {
+    setNotifVibrationState(v);
+    await setJSON(KEYS.NOTIF_VIBRATION, v);
+  }, []);
+
+  const setGoogleEmail = useCallback(async (email) => {
+    setGoogleEmailState(email);
+    if (email) await setString(KEYS.GOOGLE_EMAIL, email);
+    else await setString(KEYS.GOOGLE_EMAIL, '');
+  }, []);
+
   const scale = useCallback(
     (base) => Math.round(base * (SCALE_STEPS[uiScale] || 1)),
     [uiScale]
@@ -120,6 +156,16 @@ export function SettingsProvider({ children }) {
       setVibrationPattern,
       keepAwake,
       setKeepAwake,
+      clockFormat,
+      setClockFormat,
+      quietHoursStart,
+      setQuietHoursStart,
+      quietHoursEnd,
+      setQuietHoursEnd,
+      notifVibration,
+      setNotifVibration,
+      googleEmail,
+      setGoogleEmail,
     }),
     [
       loaded,
@@ -133,6 +179,11 @@ export function SettingsProvider({ children }) {
       autoDismissMinutes,
       vibrationPattern,
       keepAwake,
+      clockFormat,
+      quietHoursStart,
+      quietHoursEnd,
+      notifVibration,
+      googleEmail,
       setUiScale,
       setAccent,
       setForceMaxVolume,
@@ -141,6 +192,11 @@ export function SettingsProvider({ children }) {
       setAutoDismissMinutes,
       setVibrationPattern,
       setKeepAwake,
+      setClockFormat,
+      setQuietHoursStart,
+      setQuietHoursEnd,
+      setNotifVibration,
+      setGoogleEmail,
     ]
   );
 

@@ -1,15 +1,15 @@
 import React from 'react';
-import { View, TouchableOpacity, Switch } from 'react-native';
+import { View, TouchableOpacity, Switch, StyleSheet } from 'react-native';
 import ScaledText from './ScaledText';
 import ScaledIcon from './ScaledIcon';
 import { useSettings } from '../context/SettingsContext';
-import { COLORS } from '../lib/theme';
+import { COLORS, SPACE, RADIUS, LAYOUT } from '../lib/theme';
 
 export function SectionTitle({ children, icon }) {
   return (
-    <View className="flex-row items-center mb-2">
-      {icon ? <ScaledIcon name={icon} size={18} color={COLORS.text} style={{ marginRight: 8 }} /> : null}
-      <ScaledText size={17} weight="700" color={COLORS.text}>
+    <View style={styles.sectionTitle}>
+      {icon ? <ScaledIcon name={icon} size={16} color={COLORS.text} style={{ marginRight: SPACE.sm }} /> : null}
+      <ScaledText size={13} weight="700" color={COLORS.text}>
         {children}
       </ScaledText>
     </View>
@@ -18,25 +18,25 @@ export function SectionTitle({ children, icon }) {
 
 export function StatusRow({ label, ok, onFix }) {
   return (
-    <View className="flex-row justify-between items-center mt-2">
-      <View className="flex-row items-center flex-1 pr-2">
+    <View style={styles.statusRow}>
+      <View style={styles.statusLeft}>
         <ScaledIcon
           name={ok ? 'checkmark-circle' : 'alert-circle'}
-          size={17}
+          size={16}
           color={ok ? COLORS.buy : COLORS.warn}
-          style={{ marginRight: 8 }}
+          style={{ marginRight: SPACE.sm }}
         />
-        <ScaledText size={14} color={COLORS.dim}>
+        <ScaledText size={13} color={COLORS.dim} style={{ flex: 1 }}>
           {label}
         </ScaledText>
       </View>
-      {!ok && onFix && (
-        <TouchableOpacity onPress={onFix}>
-          <ScaledText size={13} weight="700" color="#ff3b5c">
+      {!ok && onFix ? (
+        <TouchableOpacity onPress={onFix} hitSlop={8}>
+          <ScaledText size={12} weight="700" color={COLORS.warn}>
             Fix
           </ScaledText>
         </TouchableOpacity>
-      )}
+      ) : null}
     </View>
   );
 }
@@ -44,26 +44,30 @@ export function StatusRow({ label, ok, onFix }) {
 export function SwitchRow({ label, sub, value, onValueChange }) {
   const { accentTokens } = useSettings();
   return (
-    <View className="flex-row items-center justify-between mb-3">
-      <View style={{ flex: 1, paddingRight: 12 }}>
-        <ScaledText size={14} color={COLORS.text}>
+    <View style={styles.switchRow}>
+      <View style={{ flex: 1, paddingRight: SPACE.md }}>
+        <ScaledText size={13} color={COLORS.text}>
           {label}
         </ScaledText>
         {sub ? (
-          <ScaledText size={12} color={COLORS.faint} style={{ marginTop: 2 }}>
+          <ScaledText size={11} color={COLORS.faint} style={{ marginTop: 2 }}>
             {sub}
           </ScaledText>
         ) : null}
       </View>
-      <Switch value={value} onValueChange={onValueChange} trackColor={{ true: accentTokens.from, false: COLORS.border }} />
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        trackColor={{ true: accentTokens.from, false: COLORS.border }}
+        thumbColor={COLORS.white}
+      />
     </View>
   );
 }
 
 export function ChoiceRow({ options, value, onChange, getLabel = (o) => o.label, getKey = (o) => o.key }) {
-  const { accentTokens } = useSettings();
   return (
-    <View className="flex-row flex-wrap" style={{ marginTop: 8, marginBottom: 4 }}>
+    <View style={styles.choiceWrap}>
       {options.map((opt) => {
         const key = getKey(opt);
         const active = key === value;
@@ -71,18 +75,12 @@ export function ChoiceRow({ options, value, onChange, getLabel = (o) => o.label,
           <TouchableOpacity
             key={key}
             onPress={() => onChange(key)}
-            style={{
-              paddingVertical: 8,
-              paddingHorizontal: 14,
-              borderRadius: 20,
-              marginRight: 8,
-              marginBottom: 8,
-              backgroundColor: active ? accentTokens.from : COLORS.surface2,
-              borderWidth: 1,
-              borderColor: active ? accentTokens.from : COLORS.border,
-            }}
+            style={[
+              styles.choice,
+              active && styles.choiceActive,
+            ]}
           >
-            <ScaledText size={13} weight="600" color={active ? '#fff' : COLORS.dim}>
+            <ScaledText size={12} weight="600" color={active ? COLORS.white : COLORS.dim}>
               {getLabel(opt)}
             </ScaledText>
           </TouchableOpacity>
@@ -91,3 +89,51 @@ export function ChoiceRow({ options, value, onChange, getLabel = (o) => o.label,
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  sectionTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACE.sm,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    minHeight: 36,
+    marginTop: SPACE.xs,
+  },
+  statusLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    paddingRight: SPACE.sm,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: SPACE.md,
+    minHeight: LAYOUT.rowMinH - 8,
+  },
+  choiceWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: SPACE.sm,
+    marginBottom: SPACE.xs,
+  },
+  choice: {
+    paddingVertical: SPACE.sm,
+    paddingHorizontal: SPACE.md,
+    borderRadius: RADIUS.full,
+    marginRight: SPACE.sm,
+    marginBottom: SPACE.sm,
+    backgroundColor: COLORS.surface2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+  },
+  choiceActive: {
+    backgroundColor: COLORS.edge,
+    borderColor: COLORS.dim,
+  },
+});

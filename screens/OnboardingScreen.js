@@ -21,9 +21,13 @@ export default function OnboardingScreen({ onComplete, onPushToken, resume = tru
   const [stepError, setStepError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
   const [ready, setReady] = useState(false);
+  const [permissionMsg, setPermissionMsg] = useState(null);
+  const [checking, setChecking] = useState(false);
 
   const appState = useRef(AppState.currentState);
   const pendingExternalStep = useRef(null);
+  const resultsRef = useRef(results);
+  resultsRef.current = results;
 
   useEffect(() => {
     (async () => {
@@ -37,21 +41,76 @@ export default function OnboardingScreen({ onComplete, onPushToken, resume = tru
     })();
   }, []);
 
+  const persistResults = async (next) => {
+    setResults(next);
+    resultsRef.current = next;
+    await setJSON(KEYS.SETUP_RESULTS, next);
+  };
+
+  const advanceFromExternal = async (stepKey) => {
+    const next = { ...resultsRef.current, [stepKey]: true };
+    await persistResults(next);
+    pendingExternalStep.current = null;
+    setAwaitingReturn(false);
+    setPermissionMsg(null);
+    setStepError(null);
+    setStepIndex((i) => i + 1);
+  };
+
+  /** After user returns from system settings: auto-check permission and advance if granted. */
+  const tryAutoAdvanceExternal = async (stepKey) => {
+    const step = steps.find((s) => s.key === stepKey);
+    if (!step || step.kind !== 'external') return;
+
+    setChecking(true);
+    setPermissionMsg(null);
+
+    // Give the OS time to persist the grant after the settings activity closes
+    await new Promise((r) => setTimeout(r, 600));
+
+    let granted = false;
+    try {
+      if (typeof step.checkGranted === 'function') {
+        granted = !!(await step.checkGranted());
+        // Retry once — some OEMs lag on policy access flag
+        if (!granted) {
+          await new Promise((r) => setTimeout(r, 500));
+          granted = !!(await step.checkGranted());
+        }
+      }
+    } catch (_) {
+      granted = false;
+    }
+
+    // OEM autostart (and similar) cannot be verified — soft-skip on return
+    if (!granted && step.softSkipOnReturn) {
+      granted = true;
+    }
+
+    setChecking(false);
+
+    if (granted) {
+      await advanceFromExternal(stepKey);
+    } else {
+      setAwaitingReturn(true);
+      setPermissionMsg(
+        'Not detected yet. If the switch is already ON, tap “I’ve enabled it — Continue”. Otherwise open settings again.'
+      );
+    }
+  };
+
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       const cameBack = appState.current.match(/inactive|background/) && next === 'active';
       appState.current = next;
       if (cameBack && pendingExternalStep.current) {
-        setAwaitingReturn(true);
+        const key = pendingExternalStep.current;
+        // Auto-check; no "I've done it" button required
+        tryAutoAdvanceExternal(key);
       }
     });
     return () => sub.remove();
   }, []);
-
-  const persistResults = async (next) => {
-    setResults(next);
-    await setJSON(KEYS.SETUP_RESULTS, next);
-  };
 
   useEffect(() => {
     if (!ready) return;
@@ -63,12 +122,13 @@ export default function OnboardingScreen({ onComplete, onPushToken, resume = tru
     if (step.kind === 'auto') {
       let cancelled = false;
       setStepError(null);
+      setPermissionMsg(null);
       setStepRunning(true);
       const t = setTimeout(async () => {
         try {
           const ok = await step.run();
           if (cancelled) return;
-          await persistResults({ ...results, [step.key]: ok });
+          await persistResults({ ...resultsRef.current, [step.key]: ok });
           setStepRunning(false);
           setStepIndex((i) => i + 1);
         } catch (e) {
@@ -77,6 +137,21 @@ export default function OnboardingScreen({ onComplete, onPushToken, resume = tru
           setStepError({ key: step.key, message: e?.message || String(e) });
         }
       }, 200);
+      return () => {
+        cancelled = true;
+        clearTimeout(t);
+      };
+    }
+    // External steps: open the system screen automatically so user only taps Allow
+    if (step.kind === 'external' && step.autoOpen && typeof step.openSettings === 'function') {
+      let cancelled = false;
+      pendingExternalStep.current = step.key;
+      setAwaitingReturn(false);
+      setPermissionMsg(null);
+      const t = setTimeout(() => {
+        if (cancelled) return;
+        step.openSettings().catch(() => {});
+      }, 450);
       return () => {
         cancelled = true;
         clearTimeout(t);
@@ -98,15 +173,40 @@ export default function OnboardingScreen({ onComplete, onPushToken, resume = tru
   const onOpenExternal = async () => {
     pendingExternalStep.current = step.key;
     setAwaitingReturn(false);
+    setPermissionMsg(null);
     await step.openSettings();
   };
 
+  // Manual continue: re-check, but never permanently trap the user.
+  // If they opened Settings and say they enabled it, trust them after one retry.
   const onAdvance = async () => {
-    await persistResults({ ...results, [step.key]: true });
-    pendingExternalStep.current = null;
-    setAwaitingReturn(false);
-    setStepError(null);
-    setStepIndex((i) => i + 1);
+    setChecking(true);
+    setPermissionMsg(null);
+    let granted = false;
+    try {
+      if (typeof step.checkGranted === 'function') {
+        // Small delay so OS has flushed the grant
+        await new Promise((r) => setTimeout(r, 300));
+        granted = !!(await step.checkGranted());
+      }
+    } catch (_) {
+      granted = false;
+    }
+    setChecking(false);
+
+    if (granted || step.softSkipOnReturn) {
+      await advanceFromExternal(step.key);
+      return;
+    }
+
+    // User already went to Settings and claims enabled — allow continue so setup cannot soft-lock
+    if (awaitingReturn || permissionMsg) {
+      await advanceFromExternal(step.key);
+      return;
+    }
+
+    setPermissionMsg('Permission not yet granted. Enable it in Settings, then return — or tap Continue after enabling.');
+    setAwaitingReturn(true);
   };
 
   const onRetry = () => {
@@ -156,13 +256,42 @@ export default function OnboardingScreen({ onComplete, onPushToken, resume = tru
 
           {step.kind === 'external' && (
             <View style={{ marginTop: 16, gap: 10 }}>
-              <PrimaryButton label={awaitingReturn ? 'Open Settings Again' : 'Open Settings'} onPress={onOpenExternal} />
-              <SecondaryButton label="I've done this — Continue" onPress={onAdvance} disabled={!awaitingReturn} />
-              {!awaitingReturn && (
-                <ScaledText size={12} color={COLORS.faint} style={{ marginTop: 2, lineHeight: 16 }}>
-                  Continue unlocks once you've opened Settings and come back.
+              {checking ? (
+                <View className="flex-row items-center" style={{ marginBottom: 4 }}>
+                  <ActivityIndicator color={COLORS.dim} />
+                  <ScaledText size={13} color={COLORS.faint} style={{ marginLeft: 10 }}>
+                    Checking permission…
+                  </ScaledText>
+                </View>
+              ) : null}
+
+              {permissionMsg ? (
+                <ScaledText size={13} color={COLORS.warn} style={{ lineHeight: 18, marginBottom: 4 }}>
+                  {permissionMsg}
                 </ScaledText>
+              ) : null}
+
+              <PrimaryButton
+                label={awaitingReturn || permissionMsg ? 'Open settings again' : 'Open settings'}
+                onPress={onOpenExternal}
+              />
+
+              {/* Fallback only — primary path is auto-advance on return */}
+              {(awaitingReturn || permissionMsg) && (
+                <SecondaryButton
+                  label="I've enabled it — Continue"
+                  onPress={onAdvance}
+                  disabled={checking}
+                />
               )}
+
+              <ScaledText size={12} color={COLORS.faint} style={{ marginTop: 2, lineHeight: 16 }}>
+                {permissionMsg
+                  ? 'Enable the permission, then come back. We check automatically.'
+                  : awaitingReturn
+                    ? 'Waiting for you to enable the permission…'
+                    : 'Settings will open automatically. Just tap Allow / enable the switch — we detect it when you return.'}
+              </ScaledText>
             </View>
           )}
 

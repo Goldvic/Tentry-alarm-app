@@ -1,12 +1,12 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Animated, Easing, Modal, StatusBar } from 'react-native';
+import { View, Animated, Easing, Modal, StatusBar, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import ScaledText from '../components/ScaledText';
 import ScaledIcon from '../components/ScaledIcon';
 import { PrimaryButton, SecondaryButton } from '../components/Buttons';
 import { useSettings } from '../context/SettingsContext';
-import { COLORS } from '../lib/theme';
+import { COLORS, SPACE, RADIUS } from '../lib/theme';
 
 export default function AlarmRingScreen({ visible, signal, onSnooze, onDismiss, snoozeMinutes }) {
   const { accentTokens } = useSettings();
@@ -30,76 +30,131 @@ export default function AlarmRingScreen({ visible, signal, onSnooze, onDismiss, 
   const ringScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.35] });
   const ringOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] });
 
-  const isBuy = (signal?.action || '').toUpperCase() === 'BUY';
-  const isSell = (signal?.action || '').toUpperCase() === 'SELL';
+  const action = String(signal?.action || '').toUpperCase();
+  const isBuy = action === 'BUY' || action === 'LONG';
+  const isSell = action === 'SELL' || action === 'SHORT';
   const sideColor = isBuy ? COLORS.buy : isSell ? COLORS.sell : accentTokens.from;
 
   return (
     <Modal visible={visible} animationType="fade" statusBarTranslucent presentationStyle="fullScreen">
       <StatusBar hidden />
       <LinearGradient colors={['#05070d', '#0c0f1c', '#05070d']} style={{ flex: 1 }}>
-        <View className="flex-1 items-center justify-between py-16 px-6">
-          <View className="items-center mt-10">
-            <ScaledText size={13} weight="700" color={COLORS.faint} style={{ letterSpacing: 3 }}>
+        <View style={styles.wrap}>
+          <View style={styles.top}>
+            <ScaledText size={12} weight="700" color={COLORS.faint} style={{ letterSpacing: 3 }}>
               TENTRY SIGNAL
             </ScaledText>
-            <ScaledText size={15} color={COLORS.dim} style={{ marginTop: 6 }}>
+            <ScaledText size={14} color={COLORS.dim} style={{ marginTop: SPACE.sm }}>
               {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </ScaledText>
           </View>
 
-          <View className="items-center">
-            <View style={{ width: 160, height: 160, alignItems: 'center', justifyContent: 'center', marginBottom: 28 }}>
+          <View style={styles.center}>
+            <View style={styles.ringBox}>
               <Animated.View
-                style={{
-                  position: 'absolute',
-                  width: 160,
-                  height: 160,
-                  borderRadius: 80,
-                  backgroundColor: sideColor,
-                  opacity: ringOpacity,
-                  transform: [{ scale: ringScale }],
-                }}
+                style={[
+                  styles.pulse,
+                  {
+                    backgroundColor: sideColor,
+                    opacity: ringOpacity,
+                    transform: [{ scale: ringScale }],
+                  },
+                ]}
               />
               <LinearGradient
                 colors={[accentTokens.from, accentTokens.to]}
-                style={{ width: 120, height: 120, borderRadius: 60, alignItems: 'center', justifyContent: 'center' }}
+                style={styles.ringCore}
               >
-                <ScaledIcon name="alarm" size={52} color="#fff" />
+                <ScaledIcon name="alarm" size={48} color="#fff" />
               </LinearGradient>
             </View>
 
             {signal?.symbol ? (
-              <ScaledText size={30} weight="800" color={COLORS.text} style={{ textAlign: 'center' }}>
+              <ScaledText size={28} weight="800" color={COLORS.white} style={{ textAlign: 'center' }}>
                 {signal.symbol}
               </ScaledText>
             ) : null}
-            {signal?.action ? (
-              <View
-                style={{
-                  marginTop: 10,
-                  paddingHorizontal: 16,
-                  paddingVertical: 6,
-                  borderRadius: 20,
-                  backgroundColor: sideColor + '33',
-                }}
-              >
-                <ScaledText size={16} weight="800" color={sideColor}>
-                  {signal.action.toUpperCase()}
+
+            {action ? (
+              <View style={[styles.sideChip, { backgroundColor: sideColor + '33' }]}>
+                <ScaledText size={15} weight="800" color={sideColor}>
+                  {action}
                 </ScaledText>
               </View>
             ) : null}
-            <ScaledText size={15} color={COLORS.dim} style={{ marginTop: 16, textAlign: 'center', paddingHorizontal: 20 }}>
+
+            <ScaledText size={14} color={COLORS.dim} style={styles.message}>
               {signal?.message || 'Signal received from your Tentry bot'}
             </ScaledText>
           </View>
 
-          <View style={{ width: '100%', gap: 12 }}>
-            <PrimaryButton label={`Snooze ${snoozeMinutes} min`} onPress={onSnooze} icon={<ScaledIcon name="time" size={18} color="#fff" />} />
-            <SecondaryButton label="Dismiss" onPress={onDismiss} icon={<ScaledIcon name="close" size={18} color={COLORS.text} />} />
+          <View style={styles.actions}>
+            <PrimaryButton
+              label={`Snooze ${snoozeMinutes} min`}
+              onPress={onSnooze}
+              icon={<ScaledIcon name="time" size={16} color="#fff" />}
+            />
+            <View style={{ height: SPACE.md }} />
+            <SecondaryButton
+              label="Dismiss"
+              onPress={onDismiss}
+              icon={<ScaledIcon name="close" size={16} color={COLORS.text} />}
+            />
           </View>
         </View>
       </LinearGradient>
     </Modal>
   );
 }
+
+const styles = StyleSheet.create({
+  wrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 56,
+    paddingHorizontal: SPACE.lg,
+  },
+  top: {
+    alignItems: 'center',
+    marginTop: SPACE.lg,
+  },
+  center: {
+    alignItems: 'center',
+  },
+  ringBox: {
+    width: 150,
+    height: 150,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: SPACE.xl,
+  },
+  pulse: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+  },
+  ringCore: {
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sideChip: {
+    marginTop: SPACE.md,
+    paddingHorizontal: SPACE.lg,
+    paddingVertical: 6,
+    borderRadius: RADIUS.full,
+  },
+  message: {
+    marginTop: SPACE.lg,
+    textAlign: 'center',
+    paddingHorizontal: SPACE.md,
+    lineHeight: 20,
+  },
+  actions: {
+    width: '100%',
+  },
+});

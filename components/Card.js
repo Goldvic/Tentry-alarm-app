@@ -1,16 +1,29 @@
 import React from 'react';
-import { View } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { COLORS, RADIUS, SPACE, LAYOUT } from '../lib/theme';
 
-// A "glass" card: dark surface, faint border, subtle top highlight via a
-// 1px lighter border-top color — cheap to render (no blur view needed)
-// but reads as glassmorphic against the near-black background.
-export default function Card({ children, className = '', style }) {
+export default function Card({ children, style, noPad, noMargin }) {
   return (
     <View
-      className={`bg-surface rounded-2xl border border-border p-4 mb-4 ${className}`}
-      style={[{ borderTopColor: '#3a4270' }, style]}
+      style={[
+        styles.card,
+        noPad && { padding: 0 },
+        noMargin && { marginBottom: 0 },
+        style,
+      ]}
     >
       {children}
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  card: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    padding: LAYOUT.cardPad,
+    marginBottom: LAYOUT.cardGap,
+  },
+});
